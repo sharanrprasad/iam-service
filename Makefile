@@ -1,0 +1,74 @@
+include .env
+export
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+DB_DSN        ?= iam:secret@tcp(localhost:3306)/iam_db?parseTime=true&charset=utf8mb4&multiStatements=true
+MIGRATE_DIR   ?= database/migrations
+PORT          ?= 8080
+
+MIGRATE_CMD   = DB_DSN=$(DB_DSN) go run ./cmd/migrate
+
+# ── Database ───────────────────────────────────────────────────────────────────
+.PHONY: db/up db/down db/reset
+
+## Start the database containers
+db/up:
+	docker compose up -d mysql redis
+
+## Stop and remove containers
+db/down:
+	docker compose down
+
+## Reset DB (down + up + migrate)
+db/reset: db/down db/up migrate/up
+
+# ── Migrations ────────────────────────────────────────────────────────────────
+.PHONY: migrate/up migrate/down migrate/reset migrate/status migrate/create migrate/create-go
+
+## Apply all pending migrations
+migrate/up:
+	$(MIGRATE_CMD) up --dir=$(MIGRATE_DIR)
+
+## Roll back the most recent migration
+migrate/down:
+	$(MIGRATE_CMD) down --dir=$(MIGRATE_DIR)
+
+## Roll back all migrations
+migrate/reset:
+	$(MIGRATE_CMD) reset --dir=$(MIGRATE_DIR)
+
+## Show migration status
+migrate/status:
+	$(MIGRATE_CMD) status --dir=$(MIGRATE_DIR)
+
+## Create a new SQL migration → make migrate/create name=add_users
+migrate/create:
+	@if [ -z "$(name)" ]; then echo "usage: make migrate/create name=<migration_name>"; exit 1; fi
+	$(MIGRATE_CMD) create --dir=$(MIGRATE_DIR) $(name)
+
+
+# ── Application ────────────────────────────────────────────────────────────────
+.PHONY: run build
+
+## Run the API server
+run:
+	PORT=$(PORT) DB_DSN=$(DB_DSN) go run ./cmd/api
+
+## Build all binaries into ./bin
+build:
+	go build -o bin/api     ./cmd/api
+	go build -o bin/migrate ./cmd/migrate
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+.PHONY: tidy help
+
+## Tidy Go modules
+tidy:
+	go mod tidy
+
+.DEFAULT_GOAL := help
+
+## Print this help
+help:
+	@grep -E '^[a-zA-Z_/.-]+:' $(MAKEFILE_LIST) | \
+	awk -F':' '{printf "  \033[36m%-25s\033[0m\n", $$1}'
