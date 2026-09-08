@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/sharanrprasad/iam-service/internal/cache"
 	"github.com/sharanrprasad/iam-service/internal/database"
 	"github.com/sharanrprasad/iam-service/internal/handler"
 	"github.com/sharanrprasad/iam-service/internal/repository"
@@ -27,6 +28,8 @@ import (
 
 func main() {
 	port, _ := strconv.Atoi(envOrDefault("DB_PORT", "3306"))
+
+	// clients
 	db, err := database.Connect(database.Config{
 		Host:     envOrDefault("DB_HOST", "localhost"),
 		Port:     port,
@@ -43,9 +46,26 @@ func main() {
 		}
 	}()
 
+	// Redis — backs login sessions and (later) OAuth authorization codes.
+	redisDB, _ := strconv.Atoi(envOrDefault("REDIS_DB", "0"))
+	redisClient, err := cache.NewRedisClient(cache.Config{
+		Addrs:    []string{envOrDefault("REDIS_ADDR", "localhost:6379")},
+		Password: os.Getenv("REDIS_PASSWORD"),
+		DB:       redisDB,
+	})
+	if err != nil {
+		log.Fatalf("cache.NewRedisClient: %v", err)
+	}
+	defer func() {
+		if closeErr := redisClient.Close(); closeErr != nil {
+			log.Printf("redis.Close: %v", closeErr)
+		}
+	}()
+
 	// Repositories
 	userRepo := repository.NewUserRepository(db)
 	refreshTokenRepo := repository.NewRefreshTokenRepository(db)
+	clientRepo := repository.NewClientRepository(db)
 
 	privateKey, publicKey, err := loadRSAKeys(filepath.Join(".rsa", "private.pem"), filepath.Join(".rsa", "public.pem"))
 	if err != nil {
@@ -54,10 +74,13 @@ func main() {
 	tokenSvc := service.NewTokenService(privateKey, publicKey)
 
 	// Services
-	authSvc := service.NewAuthService(userRepo, refreshTokenRepo, tokenSvc)
+	sessionSvc := service.NewSessionService(redisClient)
+	authSvc := service.NewAuthService(userRepo, refreshTokenRepo, tokenSvc, sessionSvc)
+	clientSvc := service.NewClientService(clientRepo)
 
 	// Handlers
-	authHandler := handler.NewAuthHandler(authSvc)
+	secureCookies := envOrDefault("COOKIE_SECURE", "true") == "true"
+	authHandler := handler.NewAuthHandler(authSvc, clientSvc, secureCookies)
 
 	// Router
 	r := chi.NewRouter()
@@ -65,8 +88,14 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 
-	r.Post("/register", authHandler.Register)
 	r.Post("/login", authHandler.Login)
+	r.Post("/logout", authHandler.Logout)
+	r.Post("/refresh", authHandler.Refresh)
+
+	// Admin routes
+	r.Route("/admin", func(r chi.Router) {
+		r.Post("/clients", authHandler.RegisterClient)
+	})
 
 	addr := fmt.Sprintf(":%s", envOrDefault("PORT", "8080"))
 	srv := &http.Server{
