@@ -75,7 +75,7 @@ func main() {
 
 	// Services
 	sessionSvc := service.NewSessionService(redisClient)
-	authSvc := service.NewAuthService(userRepo, refreshTokenRepo, tokenSvc, sessionSvc)
+	authSvc := service.NewAuthService(userRepo, refreshTokenRepo, clientRepo, tokenSvc, sessionSvc)
 	clientSvc := service.NewClientService(clientRepo)
 
 	// Handlers
@@ -91,6 +91,11 @@ func main() {
 	r.Post("/login", authHandler.Login)
 	r.Post("/logout", authHandler.Logout)
 	r.Post("/refresh", authHandler.Refresh)
+
+	// OAuth endpoints
+	r.Route("/oauth", func(r chi.Router) {
+		r.Get("/authorize", authHandler.Authorize)
+	})
 
 	// Admin routes
 	r.Route("/admin", func(r chi.Router) {

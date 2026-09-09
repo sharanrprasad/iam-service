@@ -174,7 +174,7 @@ func (h *AuthHandler) RegisterClient(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
-// Authorize - GET /oauth/authorize. This is where OAUTH flow begins. Anything involving user login + consent UI comes through here
+// Authorize - GET /oauth/authorize. This is where the OAUTH flow begins. Anything involving user login + consent UI comes through here
 // Has the following flows -
 // Authorization Code Flow → /authorize authenticates user and returns an authorization code. For servers which can store client secret safely.
 // ** Authorization Code + PKCE → Same as above, but includes PKCE challenge for added security. For use with SPA and Mobile APPs.
@@ -182,38 +182,52 @@ func (h *AuthHandler) RegisterClient(w http.ResponseWriter, r *http.Request) {
 // Client Credentials Flow → Directly hits /token, no user interaction. This is the Personal token flow like in Github.
 // Supporting only Authorization Code + PKCE flow to begin with.
 func (h *AuthHandler) Authorize(w http.ResponseWriter, r *http.Request) {
-	var req dtos.AuthorizeRequest
-
-	// This endpoint never issues tokens — it only issues a short-lived CODE which can be exchanged for tokens with /token endpoint later.
-	// STEP 1 — Validate the client - look up client_id in the database
-	// STEP 2 — Validate redirect_uri → must exactly match a URI registered by this client
-	// STEP 3 — Validate scopes → requested scopes must be a subset of what the client is allowed
-	//
-	// STEP 4 — Store the PKCE challenge → save code_challenge + code_challenge_method in Redis against a session key
-	//   → the verifier (the "key") arrives later at /token — never here
-	//
-	// STEP 5 — Check if user is already authenticated → look for a session cookie set by a previous login, if no redirect to /login. (SPA)
-	// Ends here if no login found.
-
-	// STEP 6 — Issue authorization code → generate a random opaque string (uuid) → store in Redis: { userID, clientID, scopes, challenge, redirect_uri }
-	// STEP 8 — Redirect back to the client
-
+	// The authorization request is a browser redirect, so parameters always
+	// arrive on the query string (RFC 6749 §3.1 — GET is required; POST is not
+	// supported here).
 	q := r.URL.Query()
 
-	clientID := q.Get("client_id")
-	redirectURI := q.Get("redirect_uri")
-	scope := q.Get("scope")
-	state := q.Get("state")
-	challenge := q.Get("code_challenge")
-	challengeMethod := q.Get("code_challenge_method")
+	req := dtos.AuthorizeRequest{
+		ResponseType:        q.Get("response_type"),
+		ClientID:            q.Get("client_id"),
+		RedirectURI:         q.Get("redirect_uri"),
+		Scope:               q.Get("scope"),
+		State:               q.Get("state"),
+		CodeChallenge:       q.Get("code_challenge"),
+		CodeChallengeMethod: q.Get("code_challenge_method"),
+		Nonce:               q.Get("nonce"),
+		Prompt:              q.Get("prompt"),
+		AccessType:          q.Get("access_type"),
+	}
 
-	req.ClientID = clientID
-	req.RedirectURI = redirectURI
-	req.Scope = scope
-	req.State = state
-	req.CodeChallenge = challenge
-	req.CodeChallengeMethod = challengeMethod
+	if errs := req.Validate(); errs != nil {
+		writeValidationError(w, errs)
+		return
+	}
 
+	// STEP 1 & 2 — look up the client and confirm redirect_uri is one it
+	// registered. A bad client_id or redirect_uri is reported directly with a
+	// 400: we must NOT redirect it back, since the target isn't trusted.
+	if err := h.authService.Authorize(r.Context(), &req); err != nil {
+		switch {
+		case errors.Is(err, service.ClientNotFoundError):
+			writeError(w, http.StatusBadRequest, "unknown client_id")
+		case errors.Is(err, service.RedirectURIMismatchError):
+			writeError(w, http.StatusBadRequest, "redirect_uri does not match a registered URI for this client")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+
+	// This endpoint never issues tokens — it only issues a short-lived CODE,
+	// exchanged for tokens at /oauth/token later.
+	// STEP 3 — requested scopes must be a subset of the client's allowed scopes
+	// STEP 4 — persist the PKCE challenge (code_challenge + method) in Redis against the code
+	// STEP 5 — require a login session (cookie); redirect to /login if absent
+	// STEP 6 — mint the authorization code; store { userID, clientID, scope, challenge, redirect_uri }
+	// STEP 7 — 302 back to redirect_uri with ?code=&state=
+	_ = req
 }
 
 // --- helpers ---
@@ -226,4 +240,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// writeValidationError reports field-level validation failures as a 400 using
+// OAuth's invalid_request error code, with a "fields" map for the caller to fix.
+func writeValidationError(w http.ResponseWriter, fields map[string]string) {
+	writeJSON(w, http.StatusBadRequest, map[string]any{
+		"error":             "invalid_request",
+		"error_description": "one or more parameters failed validation",
+		"fields":            fields,
+	})
 }

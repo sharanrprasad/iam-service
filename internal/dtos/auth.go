@@ -2,6 +2,8 @@ package dtos
 
 import (
 	"time"
+
+	"github.com/sharanrprasad/iam-service/internal/validator"
 )
 
 type LoginRequest struct {
@@ -41,21 +43,31 @@ type RegisterClientResponse struct {
 	Name         string `json:"name"`
 }
 
+// AuthorizeRequest holds the parsed /oauth/authorize parameters. The `form`
+// tags name the OAuth wire parameters (and are the keys used in validation
+// error responses); the `validate` tags drive dtos.AuthorizeRequest.Validate.
 type AuthorizeRequest struct {
-	ResponseType string
-	ClientID     string
-	RedirectURI  string
-	Scope        string
-	State        string
+	ResponseType string `form:"response_type" validate:"required,oneof=code"`
+	ClientID     string `form:"client_id"     validate:"required,max=255"`
+	RedirectURI  string `form:"redirect_uri"  validate:"required,redirect_uri"`
+	Scope        string `form:"scope"`
+	State        string `form:"state"         validate:"required,min=8,max=512"`
 
-	// PKCE - For SPAs and Mobile apps which cannot store the secret on the client side.
-	CodeChallenge       string
-	CodeChallengeMethod string
+	// PKCE - mandatory here; SPAs and mobile apps cannot hold a client secret.
+	// S256 only, never "plain". Charset is enforced at /oauth/token when the
+	// verifier is hashed and compared.
+	CodeChallenge       string `form:"code_challenge"        validate:"required,min=43,max=128"`
+	CodeChallengeMethod string `form:"code_challenge_method" validate:"required,oneof=S256"`
 
-	// OIDC
-	Nonce string
+	// OIDC - deferred; accepted but unused for now.
+	Nonce string `form:"nonce"`
 
-	// Optional
-	Prompt     string
-	AccessType string
+	// Optional hints. Unknown prompt values are ignored per OIDC; requested
+	// scopes are checked against the client's allowed set server-side.
+	Prompt     string `form:"prompt"`
+	AccessType string `form:"access_type" validate:"omitempty,oneof=online offline"`
+}
+
+func (r AuthorizeRequest) Validate() map[string]string {
+	return validator.Struct(r)
 }

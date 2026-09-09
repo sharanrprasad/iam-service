@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,29 +18,38 @@ import (
 // ErrEmailTaken is returned when the email address is already registered.
 var ErrEmailTaken = errors.New("email already in use")
 var ErrEmailOrPasswordWrong = errors.New("email or password wrong")
+var ClientNotFoundError = errors.New("client not found")
+
+// RedirectURIMismatchError means the request's redirect_uri is not one this
+// client registered. Like ClientNotFoundError, the caller must NOT redirect the
+// error back — it can only be shown directly (open-redirect / phishing guard).
+var RedirectURIMismatchError = errors.New("redirect_uri does not match a registered URI for this client")
 
 var ErrRedirectToLogin = errors.New("redirect to login")
 
 // AuthService handles authentication business logic.
 type AuthService struct {
-	users          *repository.UserRepository
-	refreshTokens  *repository.RefreshTokenRepository
-	tokenService   *TokenService
-	sessionService *SessionService
+	users            *repository.UserRepository
+	refreshTokens    *repository.RefreshTokenRepository
+	clientRepository *repository.ClientRepository
+	tokenService     *TokenService
+	sessionService   *SessionService
 }
 
 // NewAuthService creates a new AuthService.
 func NewAuthService(
 	users *repository.UserRepository,
 	refreshTokens *repository.RefreshTokenRepository,
+	clientRepository *repository.ClientRepository,
 	tokenService *TokenService,
 	sessions *SessionService,
 ) *AuthService {
 	return &AuthService{
-		users:          users,
-		refreshTokens:  refreshTokens,
-		tokenService:   tokenService,
-		sessionService: sessions,
+		users:            users,
+		refreshTokens:    refreshTokens,
+		clientRepository: clientRepository,
+		tokenService:     tokenService,
+		sessionService:   sessions,
 	}
 }
 
@@ -152,13 +162,23 @@ func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenHash string)
 }
 
 func (s *AuthService) Authorize(ctx context.Context, req *dtos.AuthorizeRequest) error {
-
 	// Validate client exists.
+	client, err := s.clientRepository.GetByID(ctx, req.ClientID)
+	if err != nil {
+		return fmt.Errorf("AuthService.Authorize: %w", err)
+	}
 
-	// Validate redirect uri is what is in the DB.
+	if client == nil {
+		return fmt.Errorf("AuthService.Authorize: client not found %w", ClientNotFoundError)
+	}
+
+	// Validate redirect_uri — it must EXACTLY match one the client registered.
+	if !slices.Contains(client.RedirectURIs, req.RedirectURI) {
+		return fmt.Errorf("AuthService.Authorize: %w", RedirectURIMismatchError)
+	}
 
 	// Validate scopes are with in what is allowed.
-
+	
 	//  Is the user already logged in? Check session cookie (session id from cookie but session data in Redis), if not send back to /login.
 
 	// Generate authorization code and store in Redis.
