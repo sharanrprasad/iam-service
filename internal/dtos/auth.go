@@ -1,6 +1,7 @@
 package dtos
 
 import (
+	"net/url"
 	"time"
 
 	"github.com/sharanrprasad/iam-service/internal/validator"
@@ -62,12 +63,28 @@ type AuthorizeRequest struct {
 	// OIDC - deferred; accepted but unused for now.
 	Nonce string `form:"nonce"`
 
-	// Optional hints. Unknown prompt values are ignored per OIDC; requested
-	// scopes are checked against the client's allowed set server-side.
+	// Optional hints. Unknown prompt values are ignored per OIDC; requested scopes are checked against the client's allowed set server-side.
+	// Empty string = normal. Prompt value `none` means do not show a login screen if user is not already logged in. Not implemented `login` and `consent` which force a UI screen in all cases.
 	Prompt     string `form:"prompt"`
 	AccessType string `form:"access_type" validate:"omitempty,oneof=online offline"`
 }
 
 func (r AuthorizeRequest) Validate() map[string]string {
 	return validator.Struct(r)
+}
+
+// ParseAuthorizeRequest maps /oauth/authorize query parameters onto the DTO.
+func ParseAuthorizeRequest(q url.Values) AuthorizeRequest {
+	return AuthorizeRequest{
+		ResponseType:        q.Get("response_type"),
+		ClientID:            q.Get("client_id"),
+		RedirectURI:         q.Get("redirect_uri"),
+		Scope:               q.Get("scope"),
+		State:               q.Get("state"),
+		CodeChallenge:       q.Get("code_challenge"),
+		CodeChallengeMethod: q.Get("code_challenge_method"),
+		Nonce:               q.Get("nonce"),
+		Prompt:              q.Get("prompt"),
+		AccessType:          q.Get("access_type"),
+	}
 }

@@ -66,6 +66,19 @@ func (c *RedisClient) Get(ctx context.Context, key string) (string, error) {
 	return val, nil
 }
 
+// GetDel atomically returns the value at key and deletes it (Redis GETDEL).
+// Returns ErrRedisKeyNotFound when the key does not exist.
+func (c *RedisClient) GetDel(ctx context.Context, key string) (string, error) {
+	val, err := c.rdb.GetDel(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", ErrRedisKeyNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("cache.GetDel %q: %w", key, err)
+	}
+	return val, nil
+}
+
 // Delete removes one or more keys. Missing keys are silently ignored.
 func (c *RedisClient) Delete(ctx context.Context, keys ...string) error {
 	if err := c.rdb.Del(ctx, keys...).Err(); err != nil {

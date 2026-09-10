@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sharanrprasad/iam-service/internal/dtos"
+	"github.com/sharanrprasad/iam-service/internal/httpx"
 	"github.com/sharanrprasad/iam-service/internal/service"
 )
 
@@ -22,11 +23,14 @@ type AuthHandler struct {
 	// secureCookies sets the Secure flag on the session cookie. Off for local
 	// http development, on everywhere else.
 	secureCookies bool
+	// loginURL is where /oauth/authorize sends an unauthenticated user. Usually
+	// the SPA's login route; it receives ?next= to return here after login.
+	loginURL string
 }
 
 // NewAuthHandler creates a new AuthHandler.
-func NewAuthHandler(auth *service.AuthService, client *service.ClientService, secureCookies bool) *AuthHandler {
-	return &AuthHandler{authService: auth, clientService: client, secureCookies: secureCookies}
+func NewAuthHandler(auth *service.AuthService, client *service.ClientService, secureCookies bool, loginURL string) *AuthHandler {
+	return &AuthHandler{authService: auth, clientService: client, secureCookies: secureCookies, loginURL: loginURL}
 }
 
 // Login handles POST /login.
@@ -39,12 +43,12 @@ func NewAuthHandler(auth *service.AuthService, client *service.ClientService, se
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req dtos.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httpx.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	if req.Email == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "email and password are required")
+		httpx.WriteError(w, http.StatusBadRequest, "email and password are required")
 		return
 	}
 
@@ -55,10 +59,10 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	result, err := h.authService.Login(r.Context(), req)
 	if err != nil {
 		if errors.Is(err, service.ErrEmailOrPasswordWrong) {
-			writeError(w, http.StatusUnauthorized, "email or password wrong")
+			httpx.WriteError(w, http.StatusUnauthorized, "email or password wrong")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -72,7 +76,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	writeJSON(w, http.StatusOK, dtos.LoginResponse{
+	httpx.WriteJSON(w, http.StatusOK, dtos.LoginResponse{
 		Next:             next,
 		SessionExpiresAt: result.ExpiresAt,
 	})
@@ -83,7 +87,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(SessionCookieName); err == nil {
 		if err := h.authService.Logout(r.Context(), c.Value); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal server error")
+			httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 	}
@@ -126,21 +130,21 @@ func safeNext(next string) string {
 func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	var req dtos.RefreshRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httpx.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.RefreshToken == "" {
-		writeError(w, http.StatusBadRequest, "refresh token is required")
+		httpx.WriteError(w, http.StatusBadRequest, "refresh token is required")
 		return
 	}
 
 	refreshTokenResponse, err := h.authService.RefreshToken(r.Context(), req.RefreshToken)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, refreshTokenResponse)
+	httpx.WriteJSON(w, http.StatusOK, refreshTokenResponse)
 }
 
 // RegisterClient handles POST /admin/clients.
@@ -148,30 +152,30 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) RegisterClient(w http.ResponseWriter, r *http.Request) {
 	var req dtos.RegisterClientRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
+		httpx.WriteError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	if req.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+		httpx.WriteError(w, http.StatusBadRequest, "name is required")
 		return
 	}
 	if len(req.RedirectURIs) == 0 {
-		writeError(w, http.StatusBadRequest, "at least one redirect_uri is required")
+		httpx.WriteError(w, http.StatusBadRequest, "at least one redirect_uri is required")
 		return
 	}
 	if len(req.GrantTypes) == 0 {
-		writeError(w, http.StatusBadRequest, "at least one grant_type is required")
+		httpx.WriteError(w, http.StatusBadRequest, "at least one grant_type is required")
 		return
 	}
 
 	resp, err := h.clientService.RegisterClient(r.Context(), req)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal server error")
+		httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, resp)
+	httpx.WriteJSON(w, http.StatusCreated, resp)
 }
 
 // Authorize - GET /oauth/authorize. This is where the OAUTH flow begins. Anything involving user login + consent UI comes through here
@@ -182,70 +186,41 @@ func (h *AuthHandler) RegisterClient(w http.ResponseWriter, r *http.Request) {
 // Client Credentials Flow → Directly hits /token, no user interaction. This is the Personal token flow like in Github.
 // Supporting only Authorization Code + PKCE flow to begin with.
 func (h *AuthHandler) Authorize(w http.ResponseWriter, r *http.Request) {
-	// The authorization request is a browser redirect, so parameters always
-	// arrive on the query string (RFC 6749 §3.1 — GET is required; POST is not
-	// supported here).
-	q := r.URL.Query()
-
-	req := dtos.AuthorizeRequest{
-		ResponseType:        q.Get("response_type"),
-		ClientID:            q.Get("client_id"),
-		RedirectURI:         q.Get("redirect_uri"),
-		Scope:               q.Get("scope"),
-		State:               q.Get("state"),
-		CodeChallenge:       q.Get("code_challenge"),
-		CodeChallengeMethod: q.Get("code_challenge_method"),
-		Nonce:               q.Get("nonce"),
-		Prompt:              q.Get("prompt"),
-		AccessType:          q.Get("access_type"),
-	}
+	// Parameters arrive on the query string (RFC 6749 §3.1 — GET only here).
+	req := dtos.ParseAuthorizeRequest(r.URL.Query())
 
 	if errs := req.Validate(); errs != nil {
 		writeValidationError(w, errs)
 		return
 	}
 
-	// STEP 1 & 2 — look up the client and confirm redirect_uri is one it
-	// registered. A bad client_id or redirect_uri is reported directly with a
-	// 400: we must NOT redirect it back, since the target isn't trusted.
-	if err := h.authService.Authorize(r.Context(), &req); err != nil {
-		switch {
-		case errors.Is(err, service.ClientNotFoundError):
-			writeError(w, http.StatusBadRequest, "unknown client_id")
-		case errors.Is(err, service.RedirectURIMismatchError):
-			writeError(w, http.StatusBadRequest, "redirect_uri does not match a registered URI for this client")
-		default:
-			writeError(w, http.StatusInternalServerError, "internal server error")
-		}
+	res, err := h.authService.Authorize(r.Context(), service.AuthorizeInput{
+		Request:   req,
+		SessionID: httpx.CookieValue(r, SessionCookieName),
+	})
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	// This endpoint never issues tokens — it only issues a short-lived CODE,
-	// exchanged for tokens at /oauth/token later.
-	// STEP 3 — requested scopes must be a subset of the client's allowed scopes
-	// STEP 4 — persist the PKCE challenge (code_challenge + method) in Redis against the code
-	// STEP 5 — require a login session (cookie); redirect to /login if absent
-	// STEP 6 — mint the authorization code; store { userID, clientID, scope, challenge, redirect_uri }
-	// STEP 7 — 302 back to redirect_uri with ?code=&state=
-	_ = req
-}
-
-// --- helpers ---
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+	switch res.Action {
+	case service.ActionIssueCode:
+		httpx.RedirectWith(w, r, res.RedirectURI, "code", res.Code, "state", res.State)
+	case service.ActionRequireLogin:
+		httpx.RedirectWith(w, r, h.loginURL, "next", r.URL.RequestURI())
+	case service.ActionErrorToClient:
+		httpx.RedirectWith(w, r, res.RedirectURI, "error", res.OAuthError, "state", res.State)
+	case service.ActionRejectDirect:
+		httpx.WriteError(w, http.StatusBadRequest, res.Message)
+	default:
+		httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
+	}
 }
 
 // writeValidationError reports field-level validation failures as a 400 using
 // OAuth's invalid_request error code, with a "fields" map for the caller to fix.
 func writeValidationError(w http.ResponseWriter, fields map[string]string) {
-	writeJSON(w, http.StatusBadRequest, map[string]any{
+	httpx.WriteJSON(w, http.StatusBadRequest, map[string]any{
 		"error":             "invalid_request",
 		"error_description": "one or more parameters failed validation",
 		"fields":            fields,

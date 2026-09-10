@@ -66,6 +66,8 @@ func main() {
 	userRepo := repository.NewUserRepository(db)
 	refreshTokenRepo := repository.NewRefreshTokenRepository(db)
 	clientRepo := repository.NewClientRepository(db)
+	sessionRepo := repository.NewSessionRepository(redisClient)   // Redis-backed
+	authCodeRepo := repository.NewAuthCodeRepository(redisClient) // Redis-backed
 
 	privateKey, publicKey, err := loadRSAKeys(filepath.Join(".rsa", "private.pem"), filepath.Join(".rsa", "public.pem"))
 	if err != nil {
@@ -74,13 +76,13 @@ func main() {
 	tokenSvc := service.NewTokenService(privateKey, publicKey)
 
 	// Services
-	sessionSvc := service.NewSessionService(redisClient)
-	authSvc := service.NewAuthService(userRepo, refreshTokenRepo, clientRepo, tokenSvc, sessionSvc)
+	authSvc := service.NewAuthService(userRepo, refreshTokenRepo, clientRepo, tokenSvc, sessionRepo, authCodeRepo)
 	clientSvc := service.NewClientService(clientRepo)
 
 	// Handlers
 	secureCookies := envOrDefault("COOKIE_SECURE", "true") == "true"
-	authHandler := handler.NewAuthHandler(authSvc, clientSvc, secureCookies)
+	loginURL := envOrDefault("LOGIN_URL", "/login")
+	authHandler := handler.NewAuthHandler(authSvc, clientSvc, secureCookies, loginURL)
 
 	// Router
 	r := chi.NewRouter()

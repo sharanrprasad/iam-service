@@ -6,26 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/sharanrprasad/iam-service/internal/dtos"
 	"github.com/sharanrprasad/iam-service/internal/models"
 	"github.com/sharanrprasad/iam-service/internal/repository"
+	"github.com/sharanrprasad/iam-service/internal/utils"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // ErrEmailTaken is returned when the email address is already registered.
 var ErrEmailTaken = errors.New("email already in use")
 var ErrEmailOrPasswordWrong = errors.New("email or password wrong")
-var ClientNotFoundError = errors.New("client not found")
-
-// RedirectURIMismatchError means the request's redirect_uri is not one this
-// client registered. Like ClientNotFoundError, the caller must NOT redirect the
-// error back — it can only be shown directly (open-redirect / phishing guard).
-var RedirectURIMismatchError = errors.New("redirect_uri does not match a registered URI for this client")
-
-var ErrRedirectToLogin = errors.New("redirect to login")
 
 // AuthService handles authentication business logic.
 type AuthService struct {
@@ -33,7 +27,8 @@ type AuthService struct {
 	refreshTokens    *repository.RefreshTokenRepository
 	clientRepository *repository.ClientRepository
 	tokenService     *TokenService
-	sessionService   *SessionService
+	sessionService   *repository.SessionRepository
+	authCodeService  *repository.AuthCodeRepository
 }
 
 // NewAuthService creates a new AuthService.
@@ -42,7 +37,8 @@ func NewAuthService(
 	refreshTokens *repository.RefreshTokenRepository,
 	clientRepository *repository.ClientRepository,
 	tokenService *TokenService,
-	sessions *SessionService,
+	sessions *repository.SessionRepository,
+	authCodes *repository.AuthCodeRepository,
 ) *AuthService {
 	return &AuthService{
 		users:            users,
@@ -50,6 +46,7 @@ func NewAuthService(
 		clientRepository: clientRepository,
 		tokenService:     tokenService,
 		sessionService:   sessions,
+		authCodeService:  authCodes,
 	}
 }
 
@@ -99,7 +96,7 @@ type LoginResult struct {
 }
 
 // Login verifies an email/password pair and, on success, creates a login session
-// in Redis. The caller (HTTP handler) is responsible for putting SessionID into
+// in Redis. TheHTTP handler is responsible for putting SessionID into
 // the session cookie.
 func (s *AuthService) Login(ctx context.Context, loginRequest dtos.LoginRequest) (*LoginResult, error) {
 	user, err := s.users.GetByEmail(ctx, loginRequest.Email)
@@ -161,31 +158,142 @@ func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenHash string)
 
 }
 
-func (s *AuthService) Authorize(ctx context.Context, req *dtos.AuthorizeRequest) error {
-	// Validate client exists.
+// AuthorizeAction tells the /oauth/authorize handler which HTTP response to
+// produce. Every expected branch of the protocol is one of these; the error
+// return of Authorize is reserved for infrastructure failures (DB, cache).
+type AuthorizeAction string
+
+const (
+	// ActionIssueCode — request valid and user authenticated: 302 to
+	// RedirectURI with ?code=Code&state=State.
+	ActionIssueCode AuthorizeAction = "issue_code"
+	// ActionRequireLogin — request valid but no login session: send the user
+	// to the login page, then back to /oauth/authorize.
+	ActionRequireLogin AuthorizeAction = "require_login"
+	// ActionErrorToClient — client_id and redirect_uri are trusted but another
+	// parameter is bad: 302 to RedirectURI with ?error=OAuthError&state=State.
+	ActionErrorToClient AuthorizeAction = "error_to_client"
+	// ActionRejectDirect — client_id or redirect_uri itself is untrusted: show
+	// Message directly with a 400, never redirect.
+	ActionRejectDirect AuthorizeAction = "reject_direct"
+)
+
+// AuthorizeInput is everything AuthService.Authorize needs from the transport.
+type AuthorizeInput struct {
+	Request   dtos.AuthorizeRequest
+	SessionID string // raw session-cookie value; "" when absent
+}
+
+// AuthorizeResult is the decision the handler must carry out. Only the fields
+// relevant to Action are populated.
+type AuthorizeResult struct {
+	Action AuthorizeAction
+
+	RedirectURI string // ActionIssueCode, ActionErrorToClient
+	State       string // ActionIssueCode, ActionErrorToClient
+	Code        string // ActionIssueCode
+	OAuthError  string // ActionErrorToClient, e.g. "invalid_scope"
+	Message     string // ActionRejectDirect
+}
+
+// Authorize runs the /oauth/authorize checks in order — client, redirect_uri,
+// scope, session — and returns the action the handler should take. It returns a
+// non-nil error only for infrastructure failures; every protocol outcome is an
+// AuthorizeResult.
+func (s *AuthService) Authorize(ctx context.Context, in AuthorizeInput) (AuthorizeResult, error) {
+	req := in.Request
+
 	client, err := s.clientRepository.GetByID(ctx, req.ClientID)
 	if err != nil {
-		return fmt.Errorf("AuthService.Authorize: %w", err)
+		return AuthorizeResult{}, fmt.Errorf("AuthService.Authorize: %w", err)
 	}
-
 	if client == nil {
-		return fmt.Errorf("AuthService.Authorize: client not found %w", ClientNotFoundError)
+		return AuthorizeResult{Action: ActionRejectDirect, Message: "unknown client_id"}, nil
 	}
 
-	// Validate redirect_uri — it must EXACTLY match one the client registered.
+	// redirect_uri must EXACTLY match one the client registered.
 	if !slices.Contains(client.RedirectURIs, req.RedirectURI) {
-		return fmt.Errorf("AuthService.Authorize: %w", RedirectURIMismatchError)
+		return AuthorizeResult{Action: ActionRejectDirect, Message: "redirect_uri is not registered for this client"}, nil
 	}
 
-	// Validate scopes are with in what is allowed.
-	
-	//  Is the user already logged in? Check session cookie (session id from cookie but session data in Redis), if not send back to /login.
+	// scope: SPACE-delimited
+	requested := strings.Fields(req.Scope)
+	if len(requested) == 0 || !utils.ContainsAll(client.Scopes, requested) {
+		return errorToClient(req, "invalid_scope"), nil
+	}
 
-	// Generate authorization code and store in Redis.
+	// prompt is a SPACE-delimited list. prompt is more of an OpenID connect spec but pure auth servers also need to support some part of it.
+	// When prompt is 'none' it should be the only allowed value. When 'none' we don't show the login screen , it's a silent login request.
+	prompts := strings.Fields(req.Prompt)
+	promptNone := slices.Contains(prompts, "none")
+	if promptNone && len(prompts) > 1 {
+		return errorToClient(req, "invalid_request"), nil
+	}
 
-	// Redirect back to the app with the code.
+	// The user must have a live login session (meaning they should have called /login endpoint before coming here or else we redirect them there).
+	session, err := s.SessionByID(ctx, in.SessionID)
+	if err != nil {
+		return AuthorizeResult{}, fmt.Errorf("AuthService.Authorize: %w", err)
+	}
+	if session == nil {
+		if promptNone {
+			// Silent request but nobody is logged in — hand it straight back, never show the login page.
+			return errorToClient(req, "login_required"), nil
+		}
+		return AuthorizeResult{Action: ActionRequireLogin}, nil
+	}
 
-	return nil
+	// Consent would be checked here if prompt value is "consent" but we don't support that as of now.
+
+	// Mint a single-use authorization code bound to this request and store it in
+	// Redis. The client redeems it — with the PKCE verifier — at POST /oauth/token.
+	code, err := s.authCodeService.Create(ctx, models.AuthCode{
+		ClientID:            client.ID,
+		UserID:              session.UserID,
+		RedirectURI:         req.RedirectURI,
+		Scope:               requested,
+		CodeChallenge:       req.CodeChallenge,
+		CodeChallengeMethod: req.CodeChallengeMethod,
+		Nonce:               req.Nonce,
+	})
+	if err != nil {
+		return AuthorizeResult{}, fmt.Errorf("AuthService.Authorize: %w", err)
+	}
+
+	return AuthorizeResult{
+		Action:      ActionIssueCode,
+		RedirectURI: req.RedirectURI,
+		State:       req.State,
+		Code:        code,
+	}, nil
+}
+
+// errorToClient builds an ActionErrorToClient result — an OAuth error sent back
+// to a redirect_uri that has already been validated against the registry.
+func errorToClient(req dtos.AuthorizeRequest, oauthError string) AuthorizeResult {
+	return AuthorizeResult{
+		Action:      ActionErrorToClient,
+		RedirectURI: req.RedirectURI,
+		State:       req.State,
+		OAuthError:  oauthError,
+	}
+}
+
+// SessionByID resolves a session cookie value to its session, returning
+// (nil, nil) when the id is empty or has no live session behind it — the caller
+// treats that as "not logged in".
+func (s *AuthService) SessionByID(ctx context.Context, sessionID string) (*models.Session, error) {
+	if sessionID == "" {
+		return nil, nil
+	}
+	sess, err := s.sessionService.Get(ctx, sessionID)
+	if errors.Is(err, repository.ErrSessionNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("AuthService.SessionByID: %w", err)
+	}
+	return sess, nil
 }
 
 // hashToken hashes a token using SHA256 for storage.
