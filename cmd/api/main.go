@@ -97,6 +97,7 @@ func main() {
 	// OAuth endpoints
 	r.Route("/oauth", func(r chi.Router) {
 		r.Get("/authorize", authHandler.Authorize)
+		r.Post("/token", authHandler.Token)
 	})
 
 	// Admin routes

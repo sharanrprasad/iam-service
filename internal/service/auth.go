@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"slices"
@@ -20,6 +19,50 @@ import (
 // ErrEmailTaken is returned when the email address is already registered.
 var ErrEmailTaken = errors.New("email already in use")
 var ErrEmailOrPasswordWrong = errors.New("email or password wrong")
+
+// AuthorizeInput is everything AuthService.Authorize needs from the transport.
+type AuthorizeInput struct {
+	Request   dtos.AuthorizeRequest
+	SessionID string // raw session-cookie value; "" when absent
+}
+
+// AuthorizeResult is the decision the handler must carry out. Only the fields
+// relevant to Action are populated.
+type AuthorizeResult struct {
+	Action AuthorizeAction
+
+	RedirectURI string // ActionIssueCode, ActionErrorToClient
+	State       string // ActionIssueCode, ActionErrorToClient
+	Code        string // ActionIssueCode
+	OAuthError  string // ActionErrorToClient, e.g. "invalid_scope"
+	Message     string // ActionRejectDirect
+}
+
+// RegisterInput is the data required to register a new user.
+type RegisterInput struct {
+	Email    string
+	Password string
+}
+
+// AuthorizeAction tells the /oauth/authorize handler which HTTP response to
+// produce. Every expected branch of the protocol is one of these; the error
+// return of Authorize is reserved for infrastructure failures (DB, cache).
+type AuthorizeAction string
+
+const (
+	// ActionIssueCode — request valid and user authenticated: 302 to
+	// RedirectURI with ?code=Code&state=State.
+	ActionIssueCode AuthorizeAction = "issue_code"
+	// ActionRequireLogin — request valid but no login session: send the user
+	// to the login page, then back to /oauth/authorize.
+	ActionRequireLogin AuthorizeAction = "require_login"
+	// ActionErrorToClient — client_id and redirect_uri are trusted but another
+	// parameter is bad: 302 to RedirectURI with ?error=OAuthError&state=State.
+	ActionErrorToClient AuthorizeAction = "error_to_client"
+	// ActionRejectDirect — client_id or redirect_uri itself is untrusted: show
+	// Message directly with a 400, never redirect.
+	ActionRejectDirect AuthorizeAction = "reject_direct"
+)
 
 // AuthService handles authentication business logic.
 type AuthService struct {
@@ -48,12 +91,6 @@ func NewAuthService(
 		sessionService:   sessions,
 		authCodeService:  authCodes,
 	}
-}
-
-// RegisterInput is the data required to register a new user.
-type RegisterInput struct {
-	Email    string
-	Password string
 }
 
 // Register creates a new user after validating uniqueness and hashing the password.
@@ -158,44 +195,6 @@ func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenHash string)
 
 }
 
-// AuthorizeAction tells the /oauth/authorize handler which HTTP response to
-// produce. Every expected branch of the protocol is one of these; the error
-// return of Authorize is reserved for infrastructure failures (DB, cache).
-type AuthorizeAction string
-
-const (
-	// ActionIssueCode — request valid and user authenticated: 302 to
-	// RedirectURI with ?code=Code&state=State.
-	ActionIssueCode AuthorizeAction = "issue_code"
-	// ActionRequireLogin — request valid but no login session: send the user
-	// to the login page, then back to /oauth/authorize.
-	ActionRequireLogin AuthorizeAction = "require_login"
-	// ActionErrorToClient — client_id and redirect_uri are trusted but another
-	// parameter is bad: 302 to RedirectURI with ?error=OAuthError&state=State.
-	ActionErrorToClient AuthorizeAction = "error_to_client"
-	// ActionRejectDirect — client_id or redirect_uri itself is untrusted: show
-	// Message directly with a 400, never redirect.
-	ActionRejectDirect AuthorizeAction = "reject_direct"
-)
-
-// AuthorizeInput is everything AuthService.Authorize needs from the transport.
-type AuthorizeInput struct {
-	Request   dtos.AuthorizeRequest
-	SessionID string // raw session-cookie value; "" when absent
-}
-
-// AuthorizeResult is the decision the handler must carry out. Only the fields
-// relevant to Action are populated.
-type AuthorizeResult struct {
-	Action AuthorizeAction
-
-	RedirectURI string // ActionIssueCode, ActionErrorToClient
-	State       string // ActionIssueCode, ActionErrorToClient
-	Code        string // ActionIssueCode
-	OAuthError  string // ActionErrorToClient, e.g. "invalid_scope"
-	Message     string // ActionRejectDirect
-}
-
 // Authorize runs the /oauth/authorize checks in order — client, redirect_uri,
 // scope, session — and returns the action the handler should take. It returns a
 // non-nil error only for infrastructure failures; every protocol outcome is an
@@ -296,8 +295,42 @@ func (s *AuthService) SessionByID(ctx context.Context, sessionID string) (*model
 	return sess, nil
 }
 
-// hashToken hashes a token using SHA256 for storage.
-func hashToken(token string) string {
-	hash := sha256.Sum256([]byte(token))
-	return fmt.Sprintf("%x", hash)
+// TokenAuthorizationFlow exchanges the single-use authorization code from GET /oauth/authorize for an access token and a refresh token (POST /oauth/token).
+// The handler has parsed the body into req and merged any Authorization: Basic
+// credentials into req.ClientID / req.ClientSecret.
+func (s *AuthService) TokenAuthorizationFlow(ctx context.Context, req dtos.TokenRequest) (*dtos.TokenResponse, error) {
+	// STEP 0 — grant dispatch happens in the caller. This method handles only
+	// grant_type=authorization_code; refresh_token is a separate path.
+
+	// STEP 1 — authenticate the client:
+	//   - look up client by req.ClientID in the registry; unknown → invalid_client
+	//   - confidential client: bcrypt-verify req.ClientSecret against ClientSecretHash; mismatch → invalid_client
+	//   - public client: no secret — PKCE (step 4) is the proof of possession
+	//   - "authorization_code" must be in the client's allowed grant_types → else unauthorized_client
+
+	// STEP 2 — consume the authorization code (single-use):
+	//   - s.authCodeService.Consume(ctx, req.Code)
+	//   - repository.ErrAuthCodeNotFound → invalid_grant (expired, already used, or unknown)
+
+	// STEP 3 — bind the code to this request; any mismatch → invalid_grant:
+	//   - authCode.ClientID == req.ClientID       (code was issued to THIS client)
+	//   - authCode.RedirectURI == req.RedirectURI (same value presented at /authorize)
+
+	// STEP 4 — verify PKCE:
+	//   - require req.CodeVerifier
+	//   - method S256 → base64url(SHA256(code_verifier)), constant-time compared to authCode.CodeChallenge
+	//   - mismatch → invalid_grant
+
+	// STEP 5 — load the user (authCode.UserID) for the token claims (email, etc.).
+
+	// STEP 6 — mint the access token (JWT) via s.tokenService, carrying sub,
+	//   scope (authCode.Scope), client_id / aud, and exp.
+
+	// STEP 7 — mint the refresh token: generate an opaque token, hash it, and
+	//   store it via s.refreshTokens.Create bound to { user_id, client_id, scope, expires_at }.
+
+	// STEP 8 — return dtos.TokenResponse{ AccessToken, TokenType: "Bearer",
+	//   ExpiresIn, Scope, RefreshToken }. The handler sends it with Cache-Control: no-store.
+
+	return nil, nil // TODO: implement the steps above
 }
