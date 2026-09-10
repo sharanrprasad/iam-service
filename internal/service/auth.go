@@ -64,32 +64,33 @@ const (
 	ActionRejectDirect AuthorizeAction = "reject_direct"
 )
 
-// AuthService handles authentication business logic.
+// AuthService handles authentication business logic. Its collaborators are the
+// interfaces in ports.go.
 type AuthService struct {
-	users            *repository.UserRepository
-	refreshTokens    *repository.RefreshTokenRepository
-	clientRepository *repository.ClientRepository
-	tokenService     *TokenService
-	sessionService   *repository.SessionRepository
-	authCodeService  *repository.AuthCodeRepository
+	users              userRepo
+	refreshTokens      refreshTokenRepo
+	clientRepository   clientRepo
+	tokenService       tokenIssuer
+	sessionRepository  sessionRepo
+	authCodeRepository authCodeRepo
 }
 
 // NewAuthService creates a new AuthService.
 func NewAuthService(
-	users *repository.UserRepository,
-	refreshTokens *repository.RefreshTokenRepository,
-	clientRepository *repository.ClientRepository,
-	tokenService *TokenService,
-	sessions *repository.SessionRepository,
-	authCodes *repository.AuthCodeRepository,
+	users userRepo,
+	refreshTokens refreshTokenRepo,
+	clientRepository clientRepo,
+	tokenService tokenIssuer,
+	sessions sessionRepo,
+	authCodes authCodeRepo,
 ) *AuthService {
 	return &AuthService{
-		users:            users,
-		refreshTokens:    refreshTokens,
-		clientRepository: clientRepository,
-		tokenService:     tokenService,
-		sessionService:   sessions,
-		authCodeService:  authCodes,
+		users:              users,
+		refreshTokens:      refreshTokens,
+		clientRepository:   clientRepository,
+		tokenService:       tokenService,
+		sessionRepository:  sessions,
+		authCodeRepository: authCodes,
 	}
 }
 
@@ -150,7 +151,7 @@ func (s *AuthService) Login(ctx context.Context, loginRequest dtos.LoginRequest)
 		return nil, ErrEmailOrPasswordWrong
 	}
 
-	sessionID, expiresAt, err := s.sessionService.Create(ctx, user.ID, user.Email)
+	sessionID, expiresAt, err := s.sessionRepository.Create(ctx, user.ID, user.Email)
 	if err != nil {
 		return nil, fmt.Errorf("AuthService.Login creating session: %w", err)
 	}
@@ -163,7 +164,7 @@ func (s *AuthService) Logout(ctx context.Context, sessionID string) error {
 	if sessionID == "" {
 		return nil
 	}
-	return s.sessionService.Destroy(ctx, sessionID)
+	return s.sessionRepository.Destroy(ctx, sessionID)
 }
 
 func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenHash string) (*dtos.RefreshResponse, error) {
@@ -246,7 +247,7 @@ func (s *AuthService) Authorize(ctx context.Context, in AuthorizeInput) (Authori
 
 	// Mint a single-use authorization code bound to this request and store it in
 	// Redis. The client redeems it — with the PKCE verifier — at POST /oauth/token.
-	code, err := s.authCodeService.Create(ctx, models.AuthCode{
+	code, err := s.authCodeRepository.Create(ctx, models.AuthCode{
 		ClientID:            client.ID,
 		UserID:              session.UserID,
 		RedirectURI:         req.RedirectURI,
@@ -285,7 +286,7 @@ func (s *AuthService) SessionByID(ctx context.Context, sessionID string) (*model
 	if sessionID == "" {
 		return nil, nil
 	}
-	sess, err := s.sessionService.Get(ctx, sessionID)
+	sess, err := s.sessionRepository.Get(ctx, sessionID)
 	if errors.Is(err, repository.ErrSessionNotFound) {
 		return nil, nil
 	}

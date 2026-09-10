@@ -9,16 +9,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/sharanrprasad/iam-service/internal/dtos"
 	"github.com/sharanrprasad/iam-service/internal/models"
-	"github.com/sharanrprasad/iam-service/internal/repository"
 	"golang.org/x/crypto/bcrypt"
 )
 
 // ClientService handles OAuth client registration business logic.
 type ClientService struct {
-	clients *repository.ClientRepository
+	clients clientRepo
 }
 
-func NewClientService(clients *repository.ClientRepository) *ClientService {
+func NewClientService(clients clientRepo) *ClientService {
 	return &ClientService{clients: clients}
 }
 

@@ -1,0 +1,38 @@
+# mockery v3 configuration — https://vektra.github.io/mockery/latest/configuration/
+#
+# Consumer-side interfaces: each package declares in its own ports.go the minimal
+# interfaces it depends on. Mocks are generated as testify structs into
+# `mocks_test.go` IN THAT SAME PACKAGE, so they are test-only (never in a binary)
+# and work with the unexported interface names.
+#
+#   make mocks        regenerate
+#   make mocks/clean  delete generated files
+
+all: false
+recursive: false
+
+template: testify
+formatter: goimports
+
+# file    → <package-dir>/mocks_test.go
+# package → same package as the interface
+# struct  → Mock<InterfaceName>, e.g. userRepo -> MockUserRepo
+dir: "{{.InterfaceDir}}"
+filename: "mocks_test.go"
+pkgname: "{{.SrcPackageName}}"
+structname: "Mock{{ .InterfaceName | firstUpper }}"
+
+packages:
+  github.com/sharanrprasad/iam-service/internal/service:
+    interfaces:
+      userRepo:
+      clientRepo:
+      refreshTokenRepo:
+      sessionRepo:
+      authCodeRepo:
+      tokenIssuer:
+
+  github.com/sharanrprasad/iam-service/internal/handler:
+    interfaces:
+      authService:
+      clientService:

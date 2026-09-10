@@ -16,10 +16,11 @@ import (
 // Path=/ so GET /oauth/authorize (and future OAuth endpoints) can read it.
 const SessionCookieName = "session_id"
 
-// AuthHandler handles auth and OAuth client HTTP requests.
+// AuthHandler handles auth and OAuth client HTTP requests. Its collaborators are
+// the interfaces in ports.go.
 type AuthHandler struct {
-	authService   *service.AuthService
-	clientService *service.ClientService
+	authService   authService
+	clientService clientService
 	// secureCookies sets the Secure flag on the session cookie. Off for local
 	// http development, on everywhere else.
 	secureCookies bool
@@ -29,7 +30,7 @@ type AuthHandler struct {
 }
 
 // NewAuthHandler creates a new AuthHandler.
-func NewAuthHandler(auth *service.AuthService, client *service.ClientService, secureCookies bool, loginURL string) *AuthHandler {
+func NewAuthHandler(auth authService, client clientService, secureCookies bool, loginURL string) *AuthHandler {
 	return &AuthHandler{authService: auth, clientService: client, secureCookies: secureCookies, loginURL: loginURL}
 }
 
