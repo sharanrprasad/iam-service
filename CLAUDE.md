@@ -33,15 +33,22 @@ End goals this service is being built toward:
 ## Architecture
 
 ```
-Frontend (SPA)  <---->  Auth Server (this repo)  <---->  Resource API
- first-party            owns login, sessions,            validates JWTs
- OAuth client            tokens, OAuth flows              via JWKS only
+                                   /auth/*, /oauth/* (unauthenticated, passthrough)
+Frontend (SPA)  ---->  API Gateway (Traefik)  ---->  Auth Server (this repo)
+                          |
+                          | resource requests: verifies JWT locally via
+                          | cached JWKS, injects claims as headers
+                          v
+                        Resource API
+                        (re-verifies JWT signature locally too — defense
+                         in depth, does NOT trust gateway headers blindly)
 ```
 
 - The auth server is the **only** place that touches passwords or mints tokens.
 - The frontend is a registered OAuth client like any third party (`client_id`,
   no client secret — it's a public client). It only skips the **consent screen**
   because it's flagged `is_first_party`, not the OAuth flow itself.
+- The gateway is a verification layer, not an authority — see decision #7 below.
 
 ---
 
@@ -67,7 +74,9 @@ Frontend (SPA)  <---->  Auth Server (this repo)  <---->  Resource API
 | RBAC middleware | Role → permission checks (Phase 2, designed not built) |
 
 **Immediate next step:** OAuth client registry (schema + `POST /admin/clients`), since
-`/oauth/authorize` and `/oauth/token` both depend on client lookup.
+`/oauth/authorize` and `/oauth/token` both depend on client lookup. `/.well-known/jwks.json`
+is also a near-term prerequisite (not just nice-to-have) once the Traefik gateway is wired
+up, since local JWT verification at the gateway depends on it.
 
 ---
 
@@ -75,7 +84,11 @@ Frontend (SPA)  <---->  Auth Server (this repo)  <---->  Resource API
 
 - **Access token:** RS256 JWT, 15 min TTL, stateless — verified by signature only,
   no DB hit. Custom claims (userID, email) are fine since this service is both
-  issuer and sole verifier for now.
+  issuer and sole verifier for now. When RBAC/scopes land, add `scope` (OAuth-standard,
+  space-separated) and `roles` claims to the token itself — the gateway and resource
+  API can only act on what's actually inside the JWT without reintroducing a DB/IAM
+  call per request. Note: role/scope changes only take effect on next token refresh
+  (up to 15 min), not instantly — acceptable given the short TTL, but intentional.
 - **Refresh token:** opaque UUID (not a JWT), 7 day TTL, **hashed** in DB (revocable),
   sent as an **httpOnly cookie scoped to `/auth/refresh`** only.
 - **Session cookie** (separate from refresh token): scoped to `Path=/`, lets
@@ -104,6 +117,18 @@ Frontend (SPA)  <---->  Auth Server (this repo)  <---->  Resource API
 6. **OIDC is explicitly deferred**, not rejected. Adding it later is expected to be
    a small lift (second JWT + `/userinfo` + discovery doc) on top of a correctly
    built OAuth layer — don't restructure OAuth code preemptively "for OIDC."
+7. **Gateway verification is local/JWKS-based, never ForwardAuth-per-request.** The
+   API gateway (Traefik) fetches and caches JWKS, verifies signatures itself, and
+   injects claims as headers downstream. It must never call an IAM endpoint
+   synchronously per request (e.g. token introspection) — that reintroduces IAM into
+   the hot path and defeats the stateless-JWT design. IAM is only called for login,
+   refresh, and occasional JWKS refetch on rotation.
+8. **Resource APIs re-verify JWTs locally too — don't trust gateway headers blindly.**
+   Even with claims-to-header injection at the gateway, resource services fetch their
+   own cached JWKS and independently verify the signature before trusting any injected
+   header (`X-User-Id`, etc.). This is cheap (an in-process public-key verify, not a
+   network call) and is the defense-in-depth backstop if the gateway is ever
+   bypassed or a header gets spoofed on an unlocked network path.
 
 ---
 
@@ -121,6 +146,9 @@ Frontend (SPA)  <---->  Auth Server (this repo)  <---->  Resource API
 
 ## Explicitly Out of Scope For Now
 
-- No production deployment concerns yet (this is a learning build).
+- No production deployment concerns yet (this is a learning build) — but the API
+  gateway's *architecture* (JWKS-based local verification, header injection, no
+  per-request IAM calls — see decisions #7–8) is decided and in scope; only the
+  actual Traefik deployment/config is deferred.
 - No frontend framework decisions made — backend-first.
 - No OIDC implementation — see decision #6 above.

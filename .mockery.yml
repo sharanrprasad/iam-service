@@ -37,3 +37,4 @@ packages:
       authService:
       clientService:
       tokenGrantService:
+      tokenService:

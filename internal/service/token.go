@@ -2,11 +2,15 @@ package service
 
 import (
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
+	"math/big"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/sharanrprasad/iam-service/internal/dtos"
 	"github.com/sharanrprasad/iam-service/internal/models"
 )
 
@@ -71,4 +75,36 @@ func (s *TokenService) Validate(raw string) (*models.IamClaims, error) {
 		return nil, fmt.Errorf("invalid token")
 	}
 	return claims, nil
+}
+
+// JWKS returns the public signing key as a JSON Web Key Set, for
+// GET /.well-known/jwks.json. This is what lets a gateway or resource API
+// verify access-token signatures locally, without ever calling this service.
+// Only one active key today — no rotation yet, so there is exactly one entry.
+func (s *TokenService) JWKS() dtos.JWKSResponse {
+	n := base64.RawURLEncoding.EncodeToString(s.publicKey.N.Bytes())
+	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(s.publicKey.E)).Bytes())
+
+	return dtos.JWKSResponse{
+		Keys: []dtos.JWK{
+			{
+				Kty: "RSA",
+				Use: "sig",
+				Alg: "RS256",
+				Kid: rsaThumbprint(n, e),
+				N:   n,
+				E:   e,
+			},
+		},
+	}
+}
+
+// rsaThumbprint computes the RFC 7638 JWK thumbprint (SHA-256 over the
+// canonical {"e","kty","n"} member set, lexicographically ordered, no
+// whitespace). Used as kid so a verifier can match a token's key once
+// rotation introduces more than one.
+func rsaThumbprint(n, e string) string {
+	canonical := fmt.Sprintf(`{"e":"%s","kty":"RSA","n":"%s"}`, e, n)
+	sum := sha256.Sum256([]byte(canonical))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }

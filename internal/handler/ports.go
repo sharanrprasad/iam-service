@@ -25,3 +25,7 @@ type clientService interface {
 type tokenGrantService interface {
 	Exchange(ctx context.Context, req dtos.TokenRequest) (*dtos.TokenResponse, error)
 }
+
+type tokenService interface {
+	JWKS() dtos.JWKSResponse
+}

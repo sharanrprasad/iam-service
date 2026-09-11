@@ -22,6 +22,7 @@ type AuthHandler struct {
 	authService   authService
 	clientService clientService
 	tokenGrant    tokenGrantService
+	tokenService  tokenService
 	// secureCookies sets the Secure flag on the session cookie. Off for local
 	// http development, on everywhere else.
 	secureCookies bool
@@ -31,11 +32,12 @@ type AuthHandler struct {
 }
 
 // NewAuthHandler creates a new AuthHandler.
-func NewAuthHandler(auth authService, client clientService, tokenGrant tokenGrantService, secureCookies bool, loginURL string) *AuthHandler {
+func NewAuthHandler(auth authService, client clientService, tokenGrant tokenGrantService, token tokenService, secureCookies bool, loginURL string) *AuthHandler {
 	return &AuthHandler{
 		authService:   auth,
 		clientService: client,
 		tokenGrant:    tokenGrant,
+		tokenService:  token,
 		secureCookies: secureCookies,
 		loginURL:      loginURL,
 	}
