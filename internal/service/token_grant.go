@@ -2,10 +2,19 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"errors"
+	"fmt"
+	"strings"
 
+	"github.com/google/uuid"
 	"github.com/sharanrprasad/iam-service/internal/dtos"
+	"github.com/sharanrprasad/iam-service/internal/models"
 	"github.com/sharanrprasad/iam-service/internal/oauth"
+	"github.com/sharanrprasad/iam-service/internal/repository"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Token-endpoint error sentinels (RFC 6749 §5.2); the handler maps each to its
@@ -43,8 +52,7 @@ func NewTokenGrantService(
 	}
 }
 
-// Exchange dispatches on req.GrantType. req already has its client credentials
-// merged in (Basic header or body) by the caller.
+// Exchange dispatches on req.GrantType.
 func (s *TokenGrantService) Exchange(ctx context.Context, req dtos.TokenRequest) (*dtos.TokenResponse, error) {
 	switch req.GrantType {
 	case oauth.GrantAuthorizationCode:
@@ -58,20 +66,91 @@ func (s *TokenGrantService) Exchange(ctx context.Context, req dtos.TokenRequest)
 }
 
 // authorizationCodeGrant redeems the single-use code from /oauth/authorize
-// (+ PKCE verifier) for an access token and a refresh token.
+// (+ PKCE verifier) for an access token and a refresh token. Confidential
+// clients (e.g. a Next.js backend) also authenticate with a client secret;
+// public clients (SPAs) don't have one — PKCE is required either way.
 func (s *TokenGrantService) authorizationCodeGrant(ctx context.Context, req dtos.TokenRequest) (*dtos.TokenResponse, error) {
-	// 1. Authenticate the client: confidential → bcrypt-verify req.ClientSecret
-	//    (mismatch → ErrInvalidClient); public → PKCE (step 4) is the proof.
-	//    "authorization_code" must be in the client's grant_types → else ErrUnauthorizedClient.
-	// 2. Consume the code (single-use); repository.ErrAuthCodeNotFound → ErrInvalidGrant.
-	// 3. Bind to this request: authCode.ClientID == req.ClientID and
-	//    authCode.RedirectURI == req.RedirectURI → else ErrInvalidGrant.
-	// 4. Verify PKCE: base64url(SHA256(req.CodeVerifier)) == authCode.CodeChallenge (S256).
-	// 5. Load the user for token claims.
-	// 6. Mint the access token (sub, scope, aud, exp).
-	// 7. Mint + store the refresh token (user_id, client_id, scope, expiry).
-	// 8. Return dtos.TokenResponse.
-	return nil, errors.New("authorizationCodeGrant: not implemented")
+	client, err := s.clients.GetByID(ctx, req.ClientID)
+	if err != nil {
+		return nil, fmt.Errorf("TokenGrantService.authorizationCodeGrant: %w", err)
+	}
+	if client == nil {
+		return nil, ErrInvalidClient
+	}
+
+	// Only confidential clients (they were issued a secret) present one, per spec — public clients (ClientSecretHash == "") skip this: PKCE below is
+	// their proof of possession instead.
+	if client.ClientSecretHash != "" {
+		if err := bcrypt.CompareHashAndPassword([]byte(client.ClientSecretHash), []byte(req.ClientSecret)); err != nil {
+			return nil, ErrInvalidClient
+		}
+	}
+
+	// Consume the code — single-use; missing/expired/already-used → invalid_grant.
+	authCode, err := s.authCodes.Consume(ctx, req.Code)
+	if errors.Is(err, repository.ErrAuthCodeNotFound) {
+		return nil, ErrInvalidGrant
+	}
+	if err != nil {
+		return nil, fmt.Errorf("TokenGrantService.authorizationCodeGrant: %w", err)
+	}
+
+	// The code must have been issued to THIS client for THIS redirect_uri.
+	if authCode.ClientID != req.ClientID || authCode.RedirectURI != req.RedirectURI {
+		return nil, ErrInvalidGrant
+	}
+
+	// PKCE stops a stolen authorization code from being redeemed. The client picks a
+	// random secret (code_verifier), sends only its SHA-256 hash (code_challenge) to
+	// /authorize, then sends the raw verifier here. We hash the verifier and require
+	// it to equal the stored challenge — without the verifier, a stolen code is useless.
+	if authCode.CodeChallengeMethod != "S256" {
+		return nil, ErrInvalidGrant
+	}
+	verifierHash := sha256.Sum256([]byte(req.CodeVerifier))
+	computedChallenge := base64.RawURLEncoding.EncodeToString(verifierHash[:])
+	if subtle.ConstantTimeCompare([]byte(computedChallenge), []byte(authCode.CodeChallenge)) != 1 {
+		return nil, ErrInvalidGrant
+	}
+
+	// Load the user for the token claims.
+	user, err := s.users.GetByID(ctx, authCode.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("TokenGrantService.authorizationCodeGrant: %w", err)
+	}
+	if user == nil {
+		return nil, ErrInvalidGrant
+	}
+	scope := strings.Join(authCode.Scope, " ")
+
+	// Mint the access token.
+	accessToken, err := s.tokens.IssueAccessToken(user.ID, user.Email, client.ID, scope)
+	if err != nil {
+		return nil, fmt.Errorf("TokenGrantService.authorizationCodeGrant: %w", err)
+	}
+
+	// Mint + store the refresh token, hashed — the raw value is only ever
+	// returned once, to the client.
+	refreshTokenRaw, refreshExpiresAt := s.tokens.IssueRefreshToken()
+	err = s.refreshTokens.Create(ctx, &models.RefreshToken{
+		ID:        uuid.NewString(),
+		UserID:    user.ID,
+		ClientID:  client.ID,
+		Scope:     authCode.Scope,
+		TokenHash: hashToken(refreshTokenRaw),
+		ExpiresAt: refreshExpiresAt,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("TokenGrantService.authorizationCodeGrant: %w", err)
+	}
+
+	return &dtos.TokenResponse{
+		AccessToken:  accessToken.AccessTokenString,
+		TokenType:    "Bearer",
+		ExpiresIn:    accessToken.AccessTokenExpiresIn,
+		Scope:        scope,
+		RefreshToken: refreshTokenRaw,
+	}, nil
 }
 
 // refreshTokenGrant exchanges a stored refresh token for a fresh access token,

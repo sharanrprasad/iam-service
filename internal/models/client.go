@@ -33,8 +33,10 @@ func (s *StringSlice) Scan(src any) error {
 
 // Client represents an OAuth2 client application.
 type Client struct {
-	ID               string      `db:"id"`
-	Name             string      `db:"name"`
+	ID   string `db:"id"`
+	Name string `db:"name"`
+	// ClientSecretHash is empty for public clients (no secret was ever issued —
+	// they authenticate with PKCE instead). Non-empty means confidential.
 	ClientSecretHash string      `db:"client_secret_hash"`
 	RedirectURIs     StringSlice `db:"redirect_uris"`
 	Scopes           StringSlice `db:"scopes"`

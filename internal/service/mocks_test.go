@@ -1009,8 +1009,8 @@ func (_m *MockTokenIssuer) EXPECT() *MockTokenIssuer_Expecter {
 }
 
 // IssueAccessToken provides a mock function for the type MockTokenIssuer
-func (_mock *MockTokenIssuer) IssueAccessToken(userID string, email string) (*models.AccessToken, error) {
-	ret := _mock.Called(userID, email)
+func (_mock *MockTokenIssuer) IssueAccessToken(userID string, email string, clientID string, scope string) (*models.AccessToken, error) {
+	ret := _mock.Called(userID, email, clientID, scope)
 
 	if len(ret) == 0 {
 		panic("no return value specified for IssueAccessToken")
@@ -1018,18 +1018,18 @@ func (_mock *MockTokenIssuer) IssueAccessToken(userID string, email string) (*mo
 
 	var r0 *models.AccessToken
 	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(string, string) (*models.AccessToken, error)); ok {
-		return returnFunc(userID, email)
+	if returnFunc, ok := ret.Get(0).(func(string, string, string, string) (*models.AccessToken, error)); ok {
+		return returnFunc(userID, email, clientID, scope)
 	}
-	if returnFunc, ok := ret.Get(0).(func(string, string) *models.AccessToken); ok {
-		r0 = returnFunc(userID, email)
+	if returnFunc, ok := ret.Get(0).(func(string, string, string, string) *models.AccessToken); ok {
+		r0 = returnFunc(userID, email, clientID, scope)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).(*models.AccessToken)
 		}
 	}
-	if returnFunc, ok := ret.Get(1).(func(string, string) error); ok {
-		r1 = returnFunc(userID, email)
+	if returnFunc, ok := ret.Get(1).(func(string, string, string, string) error); ok {
+		r1 = returnFunc(userID, email, clientID, scope)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -1044,11 +1044,13 @@ type MockTokenIssuer_IssueAccessToken_Call struct {
 // IssueAccessToken is a helper method to define mock.On call
 //   - userID string
 //   - email string
-func (_e *MockTokenIssuer_Expecter) IssueAccessToken(userID any, email any) *MockTokenIssuer_IssueAccessToken_Call {
-	return &MockTokenIssuer_IssueAccessToken_Call{Call: _e.mock.On("IssueAccessToken", userID, email)}
+//   - clientID string
+//   - scope string
+func (_e *MockTokenIssuer_Expecter) IssueAccessToken(userID any, email any, clientID any, scope any) *MockTokenIssuer_IssueAccessToken_Call {
+	return &MockTokenIssuer_IssueAccessToken_Call{Call: _e.mock.On("IssueAccessToken", userID, email, clientID, scope)}
 }
 
-func (_c *MockTokenIssuer_IssueAccessToken_Call) Run(run func(userID string, email string)) *MockTokenIssuer_IssueAccessToken_Call {
+func (_c *MockTokenIssuer_IssueAccessToken_Call) Run(run func(userID string, email string, clientID string, scope string)) *MockTokenIssuer_IssueAccessToken_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 string
 		if args[0] != nil {
@@ -1058,9 +1060,19 @@ func (_c *MockTokenIssuer_IssueAccessToken_Call) Run(run func(userID string, ema
 		if args[1] != nil {
 			arg1 = args[1].(string)
 		}
+		var arg2 string
+		if args[2] != nil {
+			arg2 = args[2].(string)
+		}
+		var arg3 string
+		if args[3] != nil {
+			arg3 = args[3].(string)
+		}
 		run(
 			arg0,
 			arg1,
+			arg2,
+			arg3,
 		)
 	})
 	return _c
@@ -1071,7 +1083,7 @@ func (_c *MockTokenIssuer_IssueAccessToken_Call) Return(accessToken *models.Acce
 	return _c
 }
 
-func (_c *MockTokenIssuer_IssueAccessToken_Call) RunAndReturn(run func(userID string, email string) (*models.AccessToken, error)) *MockTokenIssuer_IssueAccessToken_Call {
+func (_c *MockTokenIssuer_IssueAccessToken_Call) RunAndReturn(run func(userID string, email string, clientID string, scope string) (*models.AccessToken, error)) *MockTokenIssuer_IssueAccessToken_Call {
 	_c.Call.Return(run)
 	return _c
 }

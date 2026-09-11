@@ -10,9 +10,8 @@ import (
 	"github.com/sharanrprasad/iam-service/internal/service"
 )
 
-// Token handles POST /oauth/token — the back-channel exchange that mints tokens.
-// It is called by the client's own code (never a browser), takes an
-// application/x-www-form-urlencoded body, and always answers with JSON plus the
+// Token handles POST /oauth/token — the API that creates access and refresh tokens.
+// It is called by the client's own code (never a browser), takes an application/x-www-form-urlencoded body, and always answers with JSON plus the
 // no-store caching headers (RFC 6749 §5.1/§5.2). It never redirects.
 func (h *AuthHandler) Token(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
@@ -43,6 +42,7 @@ func (h *AuthHandler) Token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Supports different grant types.
 	resp, err := h.tokenGrant.Exchange(r.Context(), tokenRequestDto)
 	if err != nil {
 		writeTokenExchangeError(w, err)

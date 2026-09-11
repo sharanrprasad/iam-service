@@ -39,6 +39,6 @@ type authCodeRepo interface {
 }
 
 type tokenIssuer interface {
-	IssueAccessToken(userID, email string) (*models.AccessToken, error)
+	IssueAccessToken(userID, email, clientID, scope string) (*models.AccessToken, error)
 	IssueRefreshToken() (string, time.Time)
 }

@@ -20,13 +20,16 @@ func NewTokenService(privateKey *rsa.PrivateKey, publicKey *rsa.PublicKey) *Toke
 	return &TokenService{privateKey: privateKey, publicKey: publicKey}
 }
 
-// IssueAccessToken creates a JWT access token valid for 15 minutes.
-func (s *TokenService) IssueAccessToken(userID, email string) (*models.AccessToken, error) {
+// IssueAccessToken creates a JWT access token valid for 15 minutes. clientID and
+// scope are empty for the legacy /auth/refresh flow, which predates OAuth clients.
+func (s *TokenService) IssueAccessToken(userID, email, clientID, scope string) (*models.AccessToken, error) {
 
 	tokenExpiresIn := jwt.NewNumericDate(time.Now().Add(15 * time.Minute))
 	claims := models.IamClaims{
-		UserID: userID,
-		Email:  email,
+		UserID:   userID,
+		Email:    email,
+		ClientID: clientID,
+		Scope:    scope,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        uuid.NewString(), // jti — unique token id
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

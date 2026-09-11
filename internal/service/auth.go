@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"slices"
@@ -162,10 +163,14 @@ func (s *AuthService) Logout(ctx context.Context, sessionID string) error {
 	return s.sessionRepository.Destroy(ctx, sessionID)
 }
 
-func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenHash string) (*dtos.RefreshResponse, error) {
-	refreshToken, err := s.refreshTokens.GetTokenByHash(ctx, refreshTokenHash)
+func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenRaw string) (*dtos.RefreshResponse, error) {
+	// The table stores a hash, never the raw token — hash before lookup.
+	refreshToken, err := s.refreshTokens.GetTokenByHash(ctx, hashToken(refreshTokenRaw))
 	if err != nil {
 		return nil, fmt.Errorf("AuthService.RefreshToken: %w", err)
+	}
+	if refreshToken == nil {
+		return nil, errors.New("refresh token not found")
 	}
 
 	if refreshToken.ExpiresAt.Before(time.Now()) {
@@ -178,7 +183,7 @@ func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenHash string)
 		return nil, fmt.Errorf("AuthService.RefreshToken, user not found: %w", err)
 	}
 
-	accessToken, err := s.tokenService.IssueAccessToken(user.ID, user.Email)
+	accessToken, err := s.tokenService.IssueAccessToken(user.ID, user.Email, refreshToken.ClientID, strings.Join(refreshToken.Scope, " "))
 	if err != nil {
 		return nil, fmt.Errorf("AuthService.Login issuing access token: %w", err)
 	}
@@ -290,3 +295,10 @@ func (s *AuthService) SessionByID(ctx context.Context, sessionID string) (*model
 }
 
 // The POST /oauth/token grant flows moved to TokenGrantService (token_grant.go).
+
+// hashToken hashes an opaque token for storage — refresh tokens are stored
+// hashed, never in plaintext, same idea as a password hash.
+func hashToken(token string) string {
+	hash := sha256.Sum256([]byte(token))
+	return fmt.Sprintf("%x", hash)
+}

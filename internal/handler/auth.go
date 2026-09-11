@@ -172,7 +172,7 @@ func (h *AuthHandler) RegisterClient(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.clientService.RegisterClient(r.Context(), req)
 	if err != nil {
-		if errors.Is(err, service.ErrUnsupportedGrantType) {
+		if errors.Is(err, service.ErrUnsupportedGrantType) || errors.Is(err, service.ErrPublicClientCredentialsGrant) {
 			httpx.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}

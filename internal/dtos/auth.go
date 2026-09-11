@@ -34,11 +34,14 @@ type RegisterClientRequest struct {
 	Scopes       []string `json:"scopes"`
 	GrantTypes   []string `json:"grant_types"`
 	IsFirstParty bool     `json:"is_first_party"` // Only true for the application client.
+	// IsPublic marks a client that cannot hold a secret (SPAs, mobile/native
+	// apps) — no client_secret is generated; it authenticates with PKCE alone.
+	IsPublic bool `json:"is_public"`
 }
 
 type RegisterClientResponse struct {
 	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"` // returned ONCE — store it safely
+	ClientSecret string `json:"client_secret,omitempty"` // returned ONCE — store it safely; absent for public clients
 	Name         string `json:"name"`
 }
 

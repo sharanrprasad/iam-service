@@ -8,8 +8,7 @@ import (
 
 // TokenRequest is the form-encoded body of POST /oauth/token. One struct covers every grant_type; which fields matter depends on GrantType.
 type TokenRequest struct {
-	// Grant to run. Not oneof-validated — that returns invalid_request, but an
-	// unknown grant must be unsupported_grant_type (RFC 6749 §5.2).
+	// Grant to run. Not oneof-validated — that returns invalid_request, but an unknown grant must be unsupported_grant_type (RFC 6749 §5.2).
 	GrantType string `form:"grant_type" validate:"required"`
 
 	// grant_type=authorization_code

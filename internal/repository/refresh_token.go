@@ -22,7 +22,8 @@ func NewRefreshTokenRepository(db *sqlx.DB) *RefreshTokenRepository {
 
 // Create inserts a new refresh token.
 func (r *RefreshTokenRepository) Create(ctx context.Context, t *models.RefreshToken) error {
-	query := `INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (:id, :user_id, :token_hash, :expires_at)`
+	query := `INSERT INTO refresh_tokens (id, user_id, client_id, scope, token_hash, expires_at)
+	          VALUES (:id, :user_id, :client_id, :scope, :token_hash, :expires_at)`
 	_, err := r.db.NamedExecContext(ctx, query, t)
 	if err != nil {
 		return fmt.Errorf("RefreshTokenRepository.Create: %w", err)
@@ -91,7 +92,11 @@ func (r *RefreshTokenRepository) DeleteExpired(ctx context.Context) error {
 
 func (r *RefreshTokenRepository) GetTokenByHash(ctx context.Context, hash string) (*models.RefreshToken, error) {
 	var t models.RefreshToken
-	err := r.db.GetContext(ctx, &t, `SELECT * FROM refresh_tokens WHERE hash = ?`, hash)
+	// Was `WHERE hash = ?` — the column is token_hash; fixed, this never matched.
+	err := r.db.GetContext(ctx, &t, `SELECT * FROM refresh_tokens WHERE token_hash = ?`, hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("RefreshTokenRepository.GetTokenByHash: %w", err)
 	}
