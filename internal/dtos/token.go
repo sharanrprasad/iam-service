@@ -8,22 +8,18 @@ import (
 
 // TokenRequest is the form-encoded body of POST /oauth/token. One struct covers every grant_type; which fields matter depends on GrantType.
 type TokenRequest struct {
-	// Grant to run: authorization_code, refresh_token, or client_credentials (machine-to-machine). Not using oneof validator as that would produce wrong error code from the spec.
+	// Grant to run. Not oneof-validated — that returns invalid_request, but an
+	// unknown grant must be unsupported_grant_type (RFC 6749 §5.2).
 	GrantType string `form:"grant_type" validate:"required"`
 
-	// grant_type=authorization_code parameters.
-	// The single-use authorization code issued by GET /oauth/authorize.
-	Code string `form:"code" validate:"required_if=GrantType authorization_code"`
-	// Must byte-for-byte match the redirect_uri sent to /oauth/authorize — integrity check, not used for redirecting.
-	RedirectURI string `form:"redirect_uri" validate:"required_if=GrantType authorization_code"`
-	// PKCE verifier; SHA256-hashed and compared against the code_challenge stored with the code.
+	// grant_type=authorization_code
+	Code         string `form:"code" validate:"required_if=GrantType authorization_code"`
+	RedirectURI  string `form:"redirect_uri" validate:"required_if=GrantType authorization_code"` // must byte-match the value sent to /oauth/authorize
 	CodeVerifier string `form:"code_verifier" validate:"required_if=GrantType authorization_code,omitempty,min=43,max=128"`
 
-	// grant_type=refresh_token parameters.
-	// The opaque refresh token being exchanged for a fresh access token.
+	// grant_type=refresh_token
 	RefreshToken string `form:"refresh_token" validate:"required_if=GrantType refresh_token"`
-	// Optional space-delimited scope; may only narrow the token's existing scope, never widen it.
-	Scope string `form:"scope"`
+	Scope        string `form:"scope"` // optional; may only narrow the token's existing scope
 
 	// Client credentials for client_secret_post. Both are empty when the client uses an
 	// Authorization: Basic header instead; ClientSecret is also empty for public clients

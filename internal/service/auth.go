@@ -122,20 +122,15 @@ func (s *AuthService) Register(ctx context.Context, in RegisterInput) (*models.U
 	return user, nil
 }
 
-// LoginResult is what a successful password login produces: a session, not tokens.
-//
-// Per the single-token-issuance design, /login never mints JWTs or refresh
-// tokens. It only establishes a login session that GET /oauth/authorize can
-// later consume to issue an authorization code. Tokens are minted solely at
-// POST /oauth/token.
+// LoginResult is what a password login produces: a session, never tokens. Tokens
+// are minted only at POST /oauth/token (single token-issuance point).
 type LoginResult struct {
 	SessionID string
 	ExpiresAt time.Time
 }
 
-// Login verifies an email/password pair and, on success, creates a login session
-// in Redis. TheHTTP handler is responsible for putting SessionID into
-// the session cookie.
+// Login verifies an email/password pair and creates a Redis-backed login
+// session. The handler puts SessionID into the cookie.
 func (s *AuthService) Login(ctx context.Context, loginRequest dtos.LoginRequest) (*LoginResult, error) {
 	user, err := s.users.GetByEmail(ctx, loginRequest.Email)
 	if err != nil {
@@ -183,7 +178,6 @@ func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenHash string)
 		return nil, fmt.Errorf("AuthService.RefreshToken, user not found: %w", err)
 	}
 
-	// Generate access token (JWT)
 	accessToken, err := s.tokenService.IssueAccessToken(user.ID, user.Email)
 	if err != nil {
 		return nil, fmt.Errorf("AuthService.Login issuing access token: %w", err)
@@ -222,31 +216,30 @@ func (s *AuthService) Authorize(ctx context.Context, in AuthorizeInput) (Authori
 		return errorToClient(req, "invalid_scope"), nil
 	}
 
-	// prompt is a SPACE-delimited list. prompt is more of an OpenID connect spec but pure auth servers also need to support some part of it.
-	// When prompt is 'none' it should be the only allowed value. When 'none' we don't show the login screen , it's a silent login request.
+	// prompt is space-delimited (OIDC). "none" must appear alone; it means
+	// "don't show a login screen" — a silent auth attempt.
 	prompts := strings.Fields(req.Prompt)
 	promptNone := slices.Contains(prompts, "none")
 	if promptNone && len(prompts) > 1 {
 		return errorToClient(req, "invalid_request"), nil
 	}
 
-	// The user must have a live login session (meaning they should have called /login endpoint before coming here or else we redirect them there).
+	// Require a live login session; otherwise send the user to /login.
 	session, err := s.SessionByID(ctx, in.SessionID)
 	if err != nil {
 		return AuthorizeResult{}, fmt.Errorf("AuthService.Authorize: %w", err)
 	}
 	if session == nil {
 		if promptNone {
-			// Silent request but nobody is logged in — hand it straight back, never show the login page.
+			// Silent request, nobody logged in — hand it back, don't show login.
 			return errorToClient(req, "login_required"), nil
 		}
 		return AuthorizeResult{Action: ActionRequireLogin}, nil
 	}
 
-	// Consent would be checked here if prompt value is "consent" but we don't support that as of now.
+	// Consent check would go here (prompt=consent) — not supported yet.
 
-	// Mint a single-use authorization code bound to this request and store it in
-	// Redis. The client redeems it — with the PKCE verifier — at POST /oauth/token.
+	// Mint the single-use code; redeemed with the PKCE verifier at /oauth/token.
 	code, err := s.authCodeRepository.Create(ctx, models.AuthCode{
 		ClientID:            client.ID,
 		UserID:              session.UserID,
@@ -296,42 +289,4 @@ func (s *AuthService) SessionByID(ctx context.Context, sessionID string) (*model
 	return sess, nil
 }
 
-// TokenAuthorizationFlow exchanges the single-use authorization code from GET /oauth/authorize for an access token and a refresh token (POST /oauth/token).
-// The handler has parsed the body into req and merged any Authorization: Basic
-// credentials into req.ClientID / req.ClientSecret.
-func (s *AuthService) TokenAuthorizationFlow(ctx context.Context, req dtos.TokenRequest) (*dtos.TokenResponse, error) {
-	// STEP 0 — grant dispatch happens in the caller. This method handles only
-	// grant_type=authorization_code; refresh_token is a separate path.
-
-	// STEP 1 — authenticate the client:
-	//   - look up client by req.ClientID in the registry; unknown → invalid_client
-	//   - confidential client: bcrypt-verify req.ClientSecret against ClientSecretHash; mismatch → invalid_client
-	//   - public client: no secret — PKCE (step 4) is the proof of possession
-	//   - "authorization_code" must be in the client's allowed grant_types → else unauthorized_client
-
-	// STEP 2 — consume the authorization code (single-use):
-	//   - s.authCodeService.Consume(ctx, req.Code)
-	//   - repository.ErrAuthCodeNotFound → invalid_grant (expired, already used, or unknown)
-
-	// STEP 3 — bind the code to this request; any mismatch → invalid_grant:
-	//   - authCode.ClientID == req.ClientID       (code was issued to THIS client)
-	//   - authCode.RedirectURI == req.RedirectURI (same value presented at /authorize)
-
-	// STEP 4 — verify PKCE:
-	//   - require req.CodeVerifier
-	//   - method S256 → base64url(SHA256(code_verifier)), constant-time compared to authCode.CodeChallenge
-	//   - mismatch → invalid_grant
-
-	// STEP 5 — load the user (authCode.UserID) for the token claims (email, etc.).
-
-	// STEP 6 — mint the access token (JWT) via s.tokenService, carrying sub,
-	//   scope (authCode.Scope), client_id / aud, and exp.
-
-	// STEP 7 — mint the refresh token: generate an opaque token, hash it, and
-	//   store it via s.refreshTokens.Create bound to { user_id, client_id, scope, expires_at }.
-
-	// STEP 8 — return dtos.TokenResponse{ AccessToken, TokenType: "Bearer",
-	//   ExpiresIn, Scope, RefreshToken }. The handler sends it with Cache-Control: no-store.
-
-	return nil, nil // TODO: implement the steps above
-}
+// The POST /oauth/token grant flows moved to TokenGrantService (token_grant.go).

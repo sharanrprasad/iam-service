@@ -12,10 +12,8 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
-// LoginResponse is the JSON body returned by POST /login. It deliberately
-// carries no tokens — only where the SPA should navigate next (back into the
-// OAuth flow) and when the session cookie expires. The session itself rides in
-// an httpOnly cookie, not this body.
+// LoginResponse carries no tokens — only where the SPA navigates next and when
+// the session cookie expires. The session rides in an httpOnly cookie.
 type LoginResponse struct {
 	Next             string    `json:"next"`
 	SessionExpiresAt time.Time `json:"session_expires_at"`
@@ -63,8 +61,8 @@ type AuthorizeRequest struct {
 	// OIDC - deferred; accepted but unused for now.
 	Nonce string `form:"nonce"`
 
-	// Optional hints. Unknown prompt values are ignored per OIDC; requested scopes are checked against the client's allowed set server-side.
-	// Empty string = normal. Prompt value `none` means do not show a login screen if user is not already logged in. Not implemented `login` and `consent` which force a UI screen in all cases.
+	// Optional. "" = normal; "none" = don't show a login screen (silent auth).
+	// "login" / "consent" not implemented. Unknown values ignored (OIDC).
 	Prompt     string `form:"prompt"`
 	AccessType string `form:"access_type" validate:"omitempty,oneof=online offline"`
 }

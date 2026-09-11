@@ -29,7 +29,7 @@ func main() {
 		}
 	}()
 
-	authHandler := handler.NewAuthHandler(a.Auth, a.Clients, cfg.CookieSecure, cfg.LoginURL)
+	authHandler := handler.NewAuthHandler(a.Auth, a.Clients, a.TokenGrants, cfg.CookieSecure, cfg.LoginURL)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)

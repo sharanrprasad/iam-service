@@ -23,9 +23,10 @@ import (
 type App struct {
 	Cfg Config
 
-	Auth    *service.AuthService
-	Clients *service.ClientService
-	Tokens  *service.TokenService
+	Auth        *service.AuthService
+	Clients     *service.ClientService
+	Tokens      *service.TokenService
+	TokenGrants *service.TokenGrantService
 
 	db  *sqlx.DB
 	rdb *cache.RedisClient
@@ -73,14 +74,16 @@ func New(cfg Config) (*App, error) {
 	tokenSvc := service.NewTokenService(privateKey, publicKey)
 	authSvc := service.NewAuthService(userRepo, refreshTokenRepo, clientRepo, tokenSvc, sessionRepo, authCodeRepo)
 	clientSvc := service.NewClientService(clientRepo)
+	tokenGrantSvc := service.NewTokenGrantService(clientRepo, userRepo, authCodeRepo, refreshTokenRepo, tokenSvc)
 
 	return &App{
-		Cfg:     cfg,
-		Auth:    authSvc,
-		Clients: clientSvc,
-		Tokens:  tokenSvc,
-		db:      db,
-		rdb:     rdb,
+		Cfg:         cfg,
+		Auth:        authSvc,
+		Clients:     clientSvc,
+		Tokens:      tokenSvc,
+		TokenGrants: tokenGrantSvc,
+		db:          db,
+		rdb:         rdb,
 	}, nil
 }
 

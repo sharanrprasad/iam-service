@@ -7,12 +7,9 @@ import (
 	"github.com/sharanrprasad/iam-service/internal/models"
 )
 
-// ports.go declares the collaborators the service layer depends on. Each is the
-// minimal method set this package actually calls; the concrete types in
-// internal/repository satisfy them structurally. Mocks are generated into
-// mocks_test.go by `make mocks`.
-//
-// One interface per collaborator, defined once here and nowhere else.
+// ports.go declares the collaborators the service layer depends on — the minimal
+// method set actually called. Concrete types in internal/repository satisfy them
+// structurally; mocks come from `make mocks`. One interface per collaborator, here only.
 
 type userRepo interface {
 	GetByEmail(ctx context.Context, email string) (*models.User, error)

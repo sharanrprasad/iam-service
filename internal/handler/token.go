@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"errors"
 	"log"
 	"net/http"
 
 	"github.com/sharanrprasad/iam-service/internal/dtos"
 	"github.com/sharanrprasad/iam-service/internal/httpx"
+	"github.com/sharanrprasad/iam-service/internal/service"
 )
 
 // Token handles POST /oauth/token — the back-channel exchange that mints tokens.
@@ -18,10 +20,10 @@ func (h *AuthHandler) Token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Token parameters must be in the body, not the query string.
+	// Body only, not the query string.
 	tokenRequestDto := dtos.ParseTokenRequest(r.PostForm)
 
-	// Client authentication: credentials may arrive in the Authorization: Basic header or the body. resolveClient reads whichever was used; the handler writes the result onto req.
+	// Client auth: credentials from the Basic header or the body, whichever was used.
 	id, secret, oauthErr := resolveClient(r, tokenRequestDto)
 	if oauthErr != "" {
 		status := http.StatusBadRequest
@@ -34,32 +36,40 @@ func (h *AuthHandler) Token(w http.ResponseWriter, r *http.Request) {
 	}
 	tokenRequestDto.ClientID, tokenRequestDto.ClientSecret = id, secret
 
-	// Validate the request
 	if errs := tokenRequestDto.Validate(); errs != nil {
 		log.Printf("invalid request for token endpoint %v\n", errs)
 		noStore(w)
-		writeValidationError(w, errs) // 400, error=invalid_request, with per-field detail
+		writeValidationError(w, errs)
 		return
 	}
 
-	switch tokenRequestDto.GrantType {
-	case "authorization_code":
-		resp, err := h.authService.TokenAuthorizationFlow(r.Context(), tokenRequestDto)
-		if err != nil {
-			// TODO: once TokenAuth returns typed errors (invalid_grant,
-			// invalid_client, unauthorized_client, ...), errors.Is() each and map
-			// it to the right RFC 6749 §5.2 code + status. Until then, invalid_grant.
-			writeTokenError(w, http.StatusBadRequest, "invalid_grant",
-				"the authorization code is invalid, expired, or already used")
-			return
-		}
-		noStore(w)
-		httpx.WriteJSON(w, http.StatusOK, resp)
+	resp, err := h.tokenGrant.Exchange(r.Context(), tokenRequestDto)
+	if err != nil {
+		writeTokenExchangeError(w, err)
+		return
+	}
+	noStore(w)
+	httpx.WriteJSON(w, http.StatusOK, resp)
+}
 
-	// TODO: case "refresh_token": exchange a refresh token for a fresh access token.
-
-	default:
+// writeTokenExchangeError maps a TokenGrantService error to the RFC 6749 §5.2
+// JSON error body and status.
+func writeTokenExchangeError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, service.ErrUnsupportedGrantType):
 		writeTokenError(w, http.StatusBadRequest, "unsupported_grant_type", "")
+	case errors.Is(err, service.ErrInvalidClient):
+		w.Header().Set("WWW-Authenticate", `Basic realm="oauth2"`)
+		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "")
+	case errors.Is(err, service.ErrUnauthorizedClient):
+		writeTokenError(w, http.StatusBadRequest, "unauthorized_client", "")
+	case errors.Is(err, service.ErrInvalidScope):
+		writeTokenError(w, http.StatusBadRequest, "invalid_scope", "")
+	case errors.Is(err, service.ErrInvalidGrant):
+		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "")
+	default:
+		// Unknown / not-yet-implemented — don't leak internals.
+		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "the authorization grant is invalid")
 	}
 }
 
@@ -90,10 +100,6 @@ func noStore(w http.ResponseWriter) {
 // (client_secret_basic) or the body's client_id/client_secret
 // (client_secret_post). Public clients (SPAs) send only a client_id and prove
 // themselves with PKCE, so an empty secret is valid.
-//
-// It only reads the request — the caller decides what to do with id/secret. It
-// does not check that the client exists or that the secret is correct; that is a
-// registry lookup the service performs.
 func resolveClient(r *http.Request, req dtos.TokenRequest) (id, secret, oauthErr string) {
 	basicID, basicSecret, okBasic := r.BasicAuth()
 	hasAuthHeader := r.Header.Get("Authorization") != ""

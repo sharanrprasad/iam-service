@@ -21,6 +21,7 @@ const SessionCookieName = "session_id"
 type AuthHandler struct {
 	authService   authService
 	clientService clientService
+	tokenGrant    tokenGrantService
 	// secureCookies sets the Secure flag on the session cookie. Off for local
 	// http development, on everywhere else.
 	secureCookies bool
@@ -30,17 +31,19 @@ type AuthHandler struct {
 }
 
 // NewAuthHandler creates a new AuthHandler.
-func NewAuthHandler(auth authService, client clientService, secureCookies bool, loginURL string) *AuthHandler {
-	return &AuthHandler{authService: auth, clientService: client, secureCookies: secureCookies, loginURL: loginURL}
+func NewAuthHandler(auth authService, client clientService, tokenGrant tokenGrantService, secureCookies bool, loginURL string) *AuthHandler {
+	return &AuthHandler{
+		authService:   auth,
+		clientService: client,
+		tokenGrant:    tokenGrant,
+		secureCookies: secureCookies,
+		loginURL:      loginURL,
+	}
 }
 
-// Login handles POST /login.
-//
-// It is called by the login *page* — which the SPA lands on after GET
-// /oauth/authorize found no session — not by an API client directly. On success,
-// it sets the session cookie and returns the internal path to continue to
-// (normally back to /oauth/authorize). It never returns tokens; token issuance
-// happens only at POST /oauth/token.
+// Login handles POST /login: verify credentials, set the session cookie, return
+// the path to resume (normally /oauth/authorize). It never returns tokens —
+// those are minted only at POST /oauth/token.
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req dtos.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -53,8 +56,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Where to send the browser after login — almost always back into the OAuth
-	// flow. Validated to an internal path so ?next= can't become an open redirect.
+	// Post-login redirect target, validated to an internal path (open-redirect guard).
 	next := safeNext(r.URL.Query().Get("next"))
 
 	result, err := h.authService.Login(r.Context(), req)
@@ -106,10 +108,8 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// safeNext validates a post-login redirect target. To prevent an open redirect
-// it accepts only a root-relative path to /oauth/authorize (query string kept);
-// anything else — absolute URLs, protocol-relative "//host", other paths —
-// falls back to "/".
+// safeNext validates a post-login redirect target: only a root-relative path to
+// /oauth/authorize is allowed (open-redirect guard); anything else becomes "/".
 func safeNext(next string) string {
 	if next == "" {
 		return "/"
@@ -172,6 +172,10 @@ func (h *AuthHandler) RegisterClient(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.clientService.RegisterClient(r.Context(), req)
 	if err != nil {
+		if errors.Is(err, service.ErrUnsupportedGrantType) {
+			httpx.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		httpx.WriteError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
@@ -179,13 +183,10 @@ func (h *AuthHandler) RegisterClient(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, resp)
 }
 
-// Authorize - GET /oauth/authorize. This is where the OAUTH flow begins. Anything involving user login + consent UI comes through here
-// Has the following flows -
-// Authorization Code Flow → /authorize authenticates user and returns an authorization code. For servers which can store client secret safely.
-// ** Authorization Code + PKCE → Same as above, but includes PKCE challenge for added security. For use with SPA and Mobile APPs.
-// Implicit Flow → /authorize directly returns access token in redirect (deprecated and not used).
-// Client Credentials Flow → Directly hits /token, no user interaction. This is the Personal token flow like in Github.
-// Supporting only Authorization Code + PKCE flow to begin with.
+// Authorize handles GET /oauth/authorize — the front door of the OAuth flow. It
+// validates the request, checks for a login session, and either issues a
+// short-lived authorization code (redeemed at /oauth/token) or redirects to
+// login. Authorization Code + PKCE only.
 func (h *AuthHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 	// Parameters arrive on the query string (RFC 6749 §3.1 — GET only here).
 	req := dtos.ParseAuthorizeRequest(r.URL.Query())
